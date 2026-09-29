@@ -1,0 +1,179 @@
+---
+title: "Workshop1_4"
+author: "Hariharan"
+format: html
+editor: visual
+---
+
+## Loading Packages
+
+```{r}
+library(tidyverse)
+library(readr)
+library(readxl)
+
+# We load these packages csv,tsv and excel sheets.
+```
+
+## Loading the files into R
+
+```{r}
+benthic_cover <- read_csv('data/workshop1/reef_cover_log.csv')
+acoustic_stream <- read_tsv('data/workshop1/acoustic_telemetry_stream.txt')
+fisheries_annual <- read_excel('data/workshop1/fish_catch_data.xlsx')
+
+# We are loading the datasets into r to visualise them 
+
+```
+
+```{r}
+mangrove_data <- read_csv('data/workshop1/mangrove_survey_raw.csv', skip = 5,
+                          na = c(".","NA","9999","ND","blank"))
+# For this specific datset, we used 'skip' to skip the field notes and 'na' to convert the empty spaces to NA. 
+```
+
+## Data Frame Creation
+
+```{r}
+benthic_cover_df <-as.data.frame(benthic_cover)
+print(benthic_cover_df)
+
+# We are creating a dataframe of the benthic_cover_df.
+```
+
+## Wrangling existing data 
+
+```{r}
+install.packages("palmerpenguins")
+library(palmerpenguins)
+data("penguins")
+glimpse(penguins)
+
+# This is displaying an exisitng datset and loading it into R.
+```
+
+```{r}
+summary(penguins)
+morphologic_metric <- select(
+  penguins,species,bill_length_mm,bill_depth_mm,body_mass_g)
+glimpse (morphologic_metric)
+
+# Here we are using select() to pick specific columns to create a new dataset from an exisiting one
+
+Spatial_block <- select(penguins,species:island)
+print(Spatial_block)
+
+# we have created a new set where we use ':' select everything from species to island , meaning all columns within the range to be selected.
+
+clean_scientific_field <- select(penguins, -year)
+print(clean_scientific_field)
+
+# Here we are creating a new dataset where we are removing 
+```
+
+```{r}
+adelie_cohort <- filter(
+  penguins, species == "Adelie"
+)
+print(adelie_cohort)
+
+# We are filtering the data to only have adelie penguins
+```
+
+```{r}
+heavy_penguins <- filter(penguins, body_mass_g >4500)
+print(heavy_penguins)
+
+#we are filtering it by bodymass 
+```
+
+```{r}
+biscoe_gentoo <- filter(penguins, species == "Gentoo" & island == "Biscoe")
+print(biscoe_gentoo)
+
+# Here we are using the '&' to satisfy 2 conditions where if both arent satisfied it wont run.
+```
+
+```{r}
+sub_islands <- filter (penguins, island %in% c ("Dream","Torgersen"))
+print(sub_islands)
+```
+
+## Arrange()
+
+```{r}
+lightest_first <- arrange(penguins, body_mass_g)
+print(lightest_first)
+
+# Here we are using arrange() to arrange them in asecending order based on bodymass
+heaviest_first <- arrange(penguins, desc(body_mass_g))
+print(heaviest_first)
+
+# Same thing as the first one but in descending
+```
+
+## Mutate()
+
+```{r}
+penguin_ratios <- penguins %>% 
+  mutate(
+    bodymass_kg = body_mass_g/1000,
+    bill_ratio = bill_length_mm/bill_depth_mm)
+glimpse (penguin_ratios)
+
+#Here we are creating new columns using the mutate () as we are creating a bodymass_kg column converting grams to kilograms and bill_ratios by dividing bill length by bill depth.
+
+
+```
+
+## Missing value trap 
+
+```{r}
+biological_sign <- penguins %>%
+  group_by(species,sex) %>%
+  summarise(
+    sample_size = n(),
+    mean_mass_g = mean(body_mass_g,na.rm = TRUE),
+    sd_mass_g = sd(body_mass_g, na.rm = TRUE)
+    )
+print(biological_sign)
+
+# If we ran it without the na.rm =TRUE it would result in an error as the datset has empty spaces so to counter that we are running it with this to make it run by considering them as empty spaces.
+```
+
+## Plotting 
+
+```{r}
+mass_compare_plot <- penguins %>%
+  group_by(species,island) %>%
+  summarise(
+    sample_size = n(),
+    mean_mass_g = mean(body_mass_g,na.rm = TRUE),
+    sd_mass_g = sd(body_mass_g, na.rm = TRUE
+                   ),
+    .groups = "drop"
+    )
+
+ggplot(data = mass_compare_plot, mapping = aes( x = species, y =  mean_mass_g, colour = island ))+
+  geom_point(size = 3)+
+  geom_errorbar(aes(ymin =mean_mass_g - sd_mass_g,
+                    ymax = mean_mass_g + sd_mass_g),
+                width = 0.3)+
+  labs (title = "Mean body mass by species and island",
+        subtitle = "Error bars representing standard deviation",
+        y ="mean body mass (g)",
+        x ="species")+
+  theme_minimal()
+
+
+```
+
+## Saving the plots  
+
+```{r}
+ggsave("Output/Figures/mass_compare_plot.png",
+       plot = mass_compare_plot,
+       width = 120 ,
+       height = 120,
+       units = "mm", dpi =300)
+```
