@@ -286,7 +286,7 @@ p_env <- sonde_data |>
 
 p_env
 ggsave(here("Output", "Figures", "water_quality_by_zone.png"),
-       p_env, width = 10, height = 4.5, dpi = 300)
+       p_env, width = 10, height = 5, dpi = 300)
 ```
 
 
