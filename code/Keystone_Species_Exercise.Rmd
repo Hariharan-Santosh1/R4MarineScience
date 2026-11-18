@@ -1,0 +1,292 @@
+---
+title: "Keystone Species Exercise"
+author: "Hariharan"
+date: "2026-11-18"
+output: html_document
+---
+
+All the packages required for this exercise.
+
+```{r}
+library(tidyverse)
+library(readr)
+library(readxl)
+library(lubridate)   # date-time parsing, floor_date()
+library(knitr)       # kable() for the summary table
+library(here)        # paths relative to the project root, not the code/ folder
+```
+
+Loading of all the datasets.
+
+```{r}
+# here() starts from the folder containing R4MarineScience.Rproj, so these
+# paths work even though this file lives in code/
+meta_data    <- read_csv(here("data", "workshop2", "estuary_metadata.csv"))
+sonde_data   <- read_csv(here("data", "workshop2", "estuary_sonde_data.csv"),
+                         col_types = cols(.default = col_character()))
+species_dict <- read_csv(here("data", "workshop2", "species_dictionary.csv"))
+
+# read_excel() reads only the first tab by default, so loop over every tab:
+# excel_sheets() lists tabs, set_names() labels each with its tab name,
+# map_dfr() reads and stacks them. col_types = "text" avoids bind errors
+# from mixed-type columns across tabs.
+catch_path <- here("data", "workshop2", "estuary_catch_log.xlsx")
+catch_log <- excel_sheets(catch_path) |>
+  set_names() |>
+  map_dfr(\(s) read_excel(catch_path, sheet = s, col_types = "text"),
+          .id = "tab")
+
+# Create the output folders if they don't exist yet
+dir.create(here("Output", "Tables"),  recursive = TRUE, showWarnings = FALSE)
+dir.create(here("Output", "Figures"), recursive = TRUE, showWarnings = FALSE)
+```
+
+Helpers and settings
+
+```{r}
+# Zone order, upstream -> downstream
+zone_order <- c("Upstream", "Middle", "Downstream", "Marine")
+
+# Lowercase, trim, non-alphanumerics -> single underscore
+# ("LOWER ROSS" and "lower_ross" both become "lower_ross")
+standardise <- function(x) {
+  x |>
+    str_to_lower() |>
+    str_squish() |>
+    str_replace_all("[^a-z0-9]+", "_") |>
+    str_remove_all("^_|_$")
+}
+
+# Handles Excel serial numbers ("46143") and text dates. Day-first assumed.
+parse_any_date <- function(x) {
+  is_serial <- str_detect(x, "^\\d{5}(\\.\\d+)?$") & !is.na(x)
+  out <- as.Date(rep(NA_real_, length(x)))
+  out[is_serial]  <- as.Date(as.numeric(x[is_serial]), origin = "1899-12-30")
+  out[!is_serial] <- as_date(parse_date_time(x[!is_serial],
+                       orders = c("dmy", "ymd"),
+                       tz = "Australia/Brisbane"))
+  out
+}
+```
+
+Phase 1: Ingestion and decontamination
+
+```{r}
+# Catch log: standardise site and species text
+catch_log <- catch_log |>
+  mutate(site    = standardise(site),
+         species = standardise(species),
+         count   = as.numeric(count),
+         date    = parse_any_date(date)) |>
+  select(site, date, species, count)
+
+# Metadata: rename site_name -> site and standardise it so it matches the
+# catch and sonde sites. Zone keeps its original capitalisation.
+meta_data <- meta_data |>
+  rename(site = site_name) |>
+  mutate(site = standardise(site),
+         zone = str_squish(zone))
+
+# Dictionary: standardise the join key only; keep scientific names as written
+species_dict <- species_dict |>
+  mutate(common_name     = standardise(common_name),
+         scientific_name = str_squish(scientific_name)) |>
+  distinct(common_name, .keep_all = TRUE)
+
+# Sonde: parse date-times, convert -999 sensor errors to NA
+sonde_data <- sonde_data |>
+  mutate(
+    site      = standardise(site),
+    timestamp = parse_date_time(timestamp,
+                  orders = c("dmy HM", "dmy HMS", "ymd HM", "ymd HMS"),
+                  tz = "Australia/Brisbane"),
+    across(c(temperature, salinity, turbidity), as.numeric),
+    across(c(temperature, salinity, turbidity), \(x) na_if(x, -999))
+  )
+```
+
+Phase 2: Relational architecture
+
+```{r}
+# floor_date() snaps each timestamp to midnight -> one row per site per day
+sonde_daily <- sonde_data |>
+  mutate(date = as_date(floor_date(timestamp, unit = "day"))) |>
+  group_by(site, date) |>
+  summarise(mean_temp     = mean(temperature, na.rm = TRUE),
+            mean_salinity = mean(salinity,    na.rm = TRUE),
+            .groups = "drop")
+
+# Mutating join: common names -> scientific names (unmatched names dropped)
+catch_sci <- catch_log |>
+  left_join(species_dict, by = c("species" = "common_name")) |>
+  filter(!is.na(scientific_name)) |>
+  group_by(site, date, scientific_name) |>   # collapse repeat records
+  summarise(count = sum(count, na.rm = TRUE), .groups = "drop")
+```
+
+Phase 3: Zero-catch framework and the grand join
+
+```{r}
+# complete(): every species at every sampling event (site-date pairs in the
+# log). nesting() avoids inventing days a site was never sampled.
+# Done BEFORE joining so metadata and sonde columns are not NA-padded.
+catch_complete <- catch_sci |>
+  complete(scientific_name, nesting(site, date)) |>
+  mutate(count = coalesce(count, 0))
+
+master <- catch_complete |>
+  left_join(meta_data,   by = "site") |>
+  left_join(sonde_daily, by = c("site", "date")) |>
+  mutate(zone = factor(zone, levels = zone_order))
+
+write_csv(master, here("Output", "Tables", "master_dataset.csv"))
+```
+
+Phase 4: Statistical extraction
+
+```{r}
+# Deliverables list SD, Phase 4 asks for SE, so both are calculated
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+summary_table <- master |>
+  group_by(scientific_name, zone) |>
+  summarise(
+    n          = n(),
+    mean_count = mean(count, na.rm = TRUE),
+    sd_count   = sd(count,   na.rm = TRUE),
+    se_count   = se(count),
+    mean_sal   = mean(mean_salinity, na.rm = TRUE),
+    sd_sal     = sd(mean_salinity,   na.rm = TRUE),
+    se_sal     = se(mean_salinity),
+    .groups = "drop"
+  ) |>
+  mutate(across(where(is.double), \(x) round(x, 2)))
+
+write_csv(summary_table, here("Output", "Tables", "summary_table.csv"))
+
+summary_table |>
+  transmute(
+    Species = scientific_name,
+    Zone    = zone,
+    n       = n,
+    `Catch (mean ± SE)`    = paste0(mean_count, " ± ", se_count),
+    `Catch (mean ± SD)`    = paste0(mean_count, " ± ", sd_count),
+    `Salinity (mean ± SE)` = paste0(mean_sal,   " ± ", se_sal),
+    `Salinity (mean ± SD)` = paste0(mean_sal,   " ± ", sd_sal)
+  ) |>
+  kable()
+```
+
+Phase 5: Visual communication
+
+```{r, fig.width=10, fig.height=7}
+# Facet labels as plotmath: italic genus/species, upright "spp."
+# e.g. 'italic("Acanthopagrus")~"spp."'
+make_label <- function(x) {
+  if_else(str_detect(x, " spp\\.$"),
+          paste0('italic("', str_remove(x, " spp\\.$"), '")~"spp."'),
+          paste0('italic("', x, '")'))
+}
+
+p <- master |>
+  filter(!is.na(mean_salinity), !is.na(zone)) |>
+  mutate(species_label = make_label(scientific_name)) |>
+  ggplot(aes(x = mean_salinity, y = count, colour = zone)) +
+  geom_point(alpha = 0.7, size = 1.8) +
+  geom_smooth(aes(group = 1), method = "loess", se = TRUE,
+              colour = "grey30", linewidth = 0.6, formula = y ~ x) +
+  facet_wrap(~ species_label, scales = "free_y", labeller = label_parsed) +
+  scale_colour_viridis_d(name = "Estuary zone\n(upstream to downstream)") +
+  labs(x = "Mean daily salinity (PSU)",
+       y = "Fish count per sampling event") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        legend.position  = "bottom")
+
+p
+ggsave(here("Output", "Figures", "abundance_vs_salinity.png"),
+       p, width = 10, height = 7, dpi = 300)
+```
+
+Phase 6: Complementary figures
+
+Stacked bar: assemblage composition by zone
+
+```{r, fig.width=8, fig.height=5}
+# Proportion of the total catch made up by each taxon in each zone.
+# Shows how the community shifts rather than how each species changes alone.
+p_comp <- master |>
+  filter(!is.na(zone)) |>
+  group_by(zone, scientific_name) |>
+  summarise(total = sum(count), .groups = "drop") |>
+  ggplot(aes(x = zone, y = total, fill = scientific_name)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_viridis_d(name = "Taxon", option = "D") +
+  labs(x = "Estuary zone (upstream to downstream)",
+       y = "Share of total catch") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        legend.text = element_text(face = "italic"))  # note: "spp." also italic
+
+p_comp
+ggsave(here("Output", "Figures", "assemblage_composition.png"),
+       p_comp, width = 8, height = 5, dpi = 300)
+```
+
+Bar graph: mean catch ± SE by zone
+
+```{r, fig.width=10, fig.height=7}
+# Uses the Phase 4 summary table, so the figure matches the table exactly.
+p_bar <- summary_table |>
+  filter(!is.na(zone)) |>
+  mutate(species_label = make_label(scientific_name)) |>
+  ggplot(aes(x = zone, y = mean_count, fill = zone)) +
+  geom_col(alpha = 0.8) +
+  geom_errorbar(aes(ymin = pmax(mean_count - se_count, 0),
+                    ymax = mean_count + se_count),
+                width = 0.25) +
+  facet_wrap(~ species_label, labeller = label_parsed) +
+  scale_fill_viridis_d(guide = "none") +
+  labs(x = "Estuary zone (upstream to downstream)",
+       y = "Mean catch per sampling event (± SE)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 30, hjust = 1))
+
+p_bar
+ggsave(here("Output", "Figures", "mean_catch_by_zone.png"),
+       p_bar, width = 8, height = 5, dpi = 300)
+```
+
+Environmental context: water quality by zone
+
+```{r, fig.width=10, fig.height=4.5}
+# Confirms the zones really differ in water quality, which supports the
+# salinity-gradient interpretation. Uses all 15-minute readings, with the
+# -999 errors already converted to NA.
+p_env <- sonde_data |>
+  left_join(select(meta_data, site, zone), by = "site") |>
+  filter(!is.na(zone)) |>
+  mutate(zone = factor(zone, levels = zone_order)) |>
+  select(zone, temperature, salinity, turbidity) |>
+  pivot_longer(-zone, names_to = "variable", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(x = zone, y = value, fill = zone)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  facet_wrap(~ variable, scales = "free_y",
+             labeller = as_labeller(c(temperature = "Temperature (°C)",
+                                      salinity    = "Salinity (PSU)",
+                                      turbidity   = "Turbidity (NTU)"))) +
+  scale_fill_viridis_d(guide = "none") +
+  labs(x = "Estuary zone (upstream to downstream)", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 30, hjust = 1))
+
+p_env
+ggsave(here("Output", "Figures", "water_quality_by_zone.png"),
+       p_env, width = 10, height = 4.5, dpi = 300)
+```
+
+

@@ -41,7 +41,7 @@ print(benthic_cover_df)
 # We are creating a dataframe of the benthic_cover_df.
 ```
 
-## Wrangling existing data 
+## Wrangling existing data
 
 ```{r}
 install.packages("palmerpenguins")
@@ -126,7 +126,7 @@ glimpse (penguin_ratios)
 
 ```
 
-## Missing value trap 
+## Missing value trap
 
 ```{r}
 biological_sign <- penguins %>%
@@ -141,10 +141,10 @@ print(biological_sign)
 # If we ran it without the na.rm =TRUE it would result in an error as the datset has empty spaces so to counter that we are running it with this to make it run by considering them as empty spaces.
 ```
 
-## Plotting 
+## Plotting
 
 ```{r}
-mass_compare_plot <- penguins %>%
+compare_plot <- penguins %>%
   group_by(species,island) %>%
   summarise(
     sample_size = n(),
@@ -154,7 +154,7 @@ mass_compare_plot <- penguins %>%
     .groups = "drop"
     )
 
-ggplot(data = mass_compare_plot, mapping = aes( x = species, y =  mean_mass_g, colour = island ))+
+mass_compare_plot <- ggplot(data = compare_plot, mapping = aes( x = species, y =  mean_mass_g, colour = island ))+
   geom_point(size = 3)+
   geom_errorbar(aes(ymin =mean_mass_g - sd_mass_g,
                     ymax = mean_mass_g + sd_mass_g),
@@ -164,14 +164,16 @@ ggplot(data = mass_compare_plot, mapping = aes( x = species, y =  mean_mass_g, c
         y ="mean body mass (g)",
         x ="species")+
   theme_minimal()
-
+mass_compare_plot
 
 ```
 
-## Saving the plots  
+## Saving the plots
 
 ```{r}
-ggsave("Output/Figures/mass_compare_plot.png",
+#install.packages("here")
+library(here)
+ggsave(here::here("Output/Figures/mass_compare_plot.png"),
        plot = mass_compare_plot,
        width = 120 ,
        height = 120,
