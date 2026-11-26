@@ -7,7 +7,7 @@ output: html_document
 
 All the packages required for this exercise.
 
-```{r}
+```{r warning=FALSE, message=FALSE}
 library(tidyverse)
 library(readr)
 library(readxl)
